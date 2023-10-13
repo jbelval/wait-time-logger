@@ -47,7 +47,7 @@ def test_logger(description, log_file, data_file):
     with open(log_file, 'r') as f:
         logs = f.readlines()
     for log in logs:
-        l.recieve(log.split(' - ')[-1])
+        l.receive(log.split(' - ')[-1])
 
     # Get output files
     log_output = l.log_file
