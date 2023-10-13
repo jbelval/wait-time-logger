@@ -36,9 +36,10 @@ class Logger:
         self.ongoing = defaultdict(lambda: pd.DataFrame(
             data=[[None, None, None, None, None, None, []]],
             columns=['ID', 'A', 'B', 'C', 'V', 'H', 'Notes']))
+        self.listening = False
 
         if udp_socket is not None:
-            socket_info = re.match("[\\w\\W\\s]*laddr=\\('(\\d+.\\d+.\\d+.\\d+)', (\\d+)\\)>", str(udp_socket))
+            socket_info = re.match(r"[\w\W\s]*laddr=\('(\d+.\d+.\d+.\d+)', (\d+)\)>", str(udp_socket))
             if socket_info is not None:
                 self.udp_host = socket_info[1]
                 self.udp_port = socket_info[2]
@@ -129,7 +130,7 @@ class Logger:
 
         # TODO: if id is in ongoing at A, finalize
 
-        data = re.match('([ABCVH]) ([\w]{8})$', message)
+        data = re.match(r'([ABCVH]) ([\w]{8})$', message)
         if data is None:
             # Not a station card combo. Adds data to notes
             for id in self.ongoing:
@@ -143,7 +144,7 @@ class Logger:
             if station == 'H':
                 self.finalize(id)
 
-    def recieve(self, message):
+    def receive(self, message):
         """
         Logs and adds to data message
         Useful for testing without a udp connection
