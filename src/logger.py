@@ -1,5 +1,4 @@
 import sqlite3
-
 import pandas as pd
 import socket
 from datetime import datetime, timedelta
@@ -7,6 +6,7 @@ import re
 from collections import defaultdict
 import threading
 import os
+import pathlib
 
 # TODO: Test logging and data updating functionality
 # TODO: implement analysis functionality
@@ -34,30 +34,34 @@ class Logger(threading.Thread):
         self.setup_database(database)
         self.auto_save = auto_save
 
-        self.udp_socket = udp_socket
-
         self.current_session = datetime.now().date()
         self.last_write = datetime.now()
         self.listening = False
+        self._stop_event = None
 
         self.finished = pd.DataFrame(data=[], columns=['ID', 'Session', 'A', 'B', 'C', 'V', 'H', 'Notes'])
         self.ongoing = defaultdict(lambda: pd.DataFrame(
-            data=[[None, self.current_session, None, None, None, None, '']],
+            data=[[None, self.current_session, None, None, None, None, None, '']],
             columns=['ID', 'Session', 'A', 'B', 'C', 'V', 'H', 'Notes']))
 
         self.buffer_size = 1024
-        if udp_socket is not None:
-            if type(udp_socket) in [list, tuple] and len(udp_socket) == 2:
-                self.udp_host, self.udp_port = udp_socket
-            elif type(udp_socket) == socket.socket:
-                socket_info = re.match(r"[\w\W\s]*laddr=\('(\d+.\d+.\d+.\d+)', (\d+)\)>", str(udp_socket))
-                if socket_info is not None:
-                    self.udp_host = socket_info[1]
-                    self.udp_port = socket_info[2]
-            else:
-                print('Could not parse udp socket.')
-                self.udp_host = None
-                self.udp_port = None
+        self.udp_socket = None
+        if type(udp_socket) in [list, tuple] and len(udp_socket) == 2:
+            self.udp_host, self.udp_port = udp_socket
+            self.create_udp_socket(self.udp_host, self.udp_port)
+        elif type(udp_socket) == socket.socket:
+            self.udp_socket = udp_socket
+            socket_info = re.match(r"[\w\W\s]*laddr=\('(\d+.\d+.\d+.\d+)', (\d+)\)>", str(udp_socket))
+            if socket_info is not None:
+                self.udp_host = socket_info[1]
+                self.udp_port = socket_info[2]
+        elif udp_socket is None:
+            self.udp_host = None
+            self.udp_port = None
+        else:
+            print('Could not parse udp socket.')
+            self.udp_host = None
+            self.udp_port = None
 
     def __del__(self):
         """
@@ -102,6 +106,7 @@ class Logger(threading.Thread):
                 # Designed to happen so stop event can trigger thread end
                 pass
             except Exception as e:
+                raise e.with_traceback()
                 print(f'Error occurred: {e}')
                 self._stop_event.set()
 
@@ -133,7 +138,7 @@ class Logger(threading.Thread):
         if overwrite or self.udp_port is None:
             self.udp_port = udp_port
         self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.udp_socket.bind((udp_host, udp_port))
+        self.udp_socket.bind((self.udp_host, self.udp_port))
         self.udp_socket.settimeout(2)
         return self.udp_socket
 
@@ -156,31 +161,44 @@ class Logger(threading.Thread):
         """
         if self.log_files is None:
             self.log_files = [
-                'udp_log_ALL.txt'
-                f'udp_log_{self.current_session:%m.%d.%y}.txt'
+                './data/udp_log_ALL.txt',
+                f'./data/udp_log_{self.current_session:%m.%d.%y}.txt'
             ]
+            if not os.path.exists('./data'):
+                os.mkdir('./data')
         return self.log_files
+
+    def get_database_connection(self):
+        """
+        Gets connection to listener's database
+
+        :return: database connection
+        :rtype: sqlite3.Connection
+        """
+        conn = sqlite3.connect(self.database)
+        conn.cursor().execute("PRAGMA jojurnal_mode=wal")
+        return conn
 
     def setup_database(self, database):
         """
-        Sets up database connection, as well as initial database creation if database file does not exist
+        Sets up database if database file does not exist
 
         :param database: Database file name
         :type database: string
         :return:
         """
+
         database_exists = os.path.exists(database)
 
         # Generates folder structure
-        folders = database.split('/')
-        for i in range(len(folders)-1):
-            temp = '/'.join(folders[:i+1])
-            if not os.path.exists(temp):
-                os.mkdir(temp)
+        folder = '/'.join(database.split('/')[:-1])
+        if not os.path.exists(folder):
+            pathlib.Path(folder).mkdir(parents=True)
 
         # Connecting to database
-        self.database_conn = sqlite3.connect(database)
-        c = self.database_conn.cursor()
+        self.database = database
+        conn = sqlite3.connect(database)
+        c = conn.cursor()
         c.execute("PRAGMA journal_mode=wal")
 
         # If database did not exist, creates structure of tables
@@ -204,6 +222,7 @@ class Logger(threading.Thread):
                     notes TEXT
                 );
             """)
+            conn.commit()
 
     def update_session(self):
         """
@@ -245,9 +264,10 @@ class Logger(threading.Thread):
         :type message: string
         :return: None
         """
-        cursor = self.database_conn.cursor()
+        conn = self.get_database_connection()
+        cursor = conn.cursor()
         cursor.execute("INSERT INTO Logs VALUES(?,?,?);", (time, self.current_session, message))
-        self.database_conn.commit()
+        conn.commit()
 
     def update_data(self, time, message):
         """
@@ -301,13 +321,15 @@ class Logger(threading.Thread):
             raise UserWarning('Trying to finalize id not currently in ongoing.')
         curr = self.ongoing[id]
         curr = curr.iloc[0].values
-        curr[-1] = curr[-1][:-2]
+        curr[0] = id
+        curr[-1] = curr[-1][:-2]    # Removes ', ' from end of Notes
         curr = tuple(curr)
         del self.ongoing[id]
 
-        c = self.database_conn.cursor()
+        conn = self.get_database_connection()
+        c = conn.cursor()
         c.execute("INSERT INTO BadgeScans VALUES(?,?,?,?,?,?,?,?)", curr)
-        self.database_conn.commit()
+        conn.commit()
         # self.finished.loc[len(self.finished)] = curr.values[0]
 
     def dump_data(self):
