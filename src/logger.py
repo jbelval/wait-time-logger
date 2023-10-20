@@ -234,6 +234,7 @@ class Logger(threading.Thread):
         """
         if (time.date() != self.current_session and
                 (time - self.last_write) / timedelta(hours=1) > 1):
+            print('Updating session and log files.')
             # Update any log files\
             log_files = self.get_text_log_files()
             for i in range(len(log_files)):
@@ -323,6 +324,7 @@ class Logger(threading.Thread):
         """
         self.last_write = datetime(1900, 1, 1)
         self.current_session = self.last_write.date()
+        self.log_files = None
         with open(log_file, 'r') as f:
             logs = f.readlines()
         for l in logs:
