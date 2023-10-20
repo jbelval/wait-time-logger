@@ -282,7 +282,7 @@ class Logger(threading.Thread):
         :return: None
         """
 
-        data = re.match(r'([ABCVH]) ([\w]{8})$', message)
+        data = re.match(r'([ABCVH]) ([\w]{7,8})$', message)
         if data is None:
             # Not a station card combo. Adds data to notes
             for id in self.ongoing:
