@@ -34,8 +34,8 @@ class Logger(threading.Thread):
         self.setup_database(database)
         self.auto_save = auto_save
 
-        self.current_session = datetime.now().date()
         self.last_write = datetime.now()
+        self.current_session = self.last_write.date()
         self.listening = False
         self._stop_event = None
 
@@ -98,7 +98,7 @@ class Logger(threading.Thread):
                 time = datetime.now()
                 print(f'{time:%Y-%m-%d %H:%M:%S} - Received message from {addr}: {data}')
 
-                self.update_session()
+                self.update_session(time)
                 self.log_to_text_files(time, data)
                 self.log_to_database(time, data)
                 self.update_data(time, data)
@@ -224,22 +224,25 @@ class Logger(threading.Thread):
             """)
             conn.commit()
 
-    def update_session(self):
+    def update_session(self, time):
         """
         Updates session info and log files if:
             1. Current session isn't today
             2. More than one hour since last write has passed
+        :param time: Time of current write
         :return:
         """
-        if (datetime.now().date() != self.current_session and
-                (datetime.now() - self.last_write) / timedelta(hours=1) > 1):
-            # Update any log files
-            for i in range(len(self.log_files)):
-                self.log_files[i] = self.log_files[i].replace(
+        if (time.date() != self.current_session and
+                (time - self.last_write) / timedelta(hours=1) > 1):
+            # Update any log files\
+            log_files = self.get_text_log_files()
+            for i in range(len(log_files)):
+                log_files[i] = log_files[i].replace(
                     f'{self.current_session:%m.%d.%y}',
-                    f'{datetime.now():%m.%d.%y}'
+                    f'{time:%m.%d.%y}'
                 )
-            self.current_session = datetime.now().date()
+            self.current_session = time.date()
+
     def log_to_text_files(self, time, message):
         """
         Logs message and time to text log files
@@ -309,6 +312,33 @@ class Logger(threading.Thread):
         time = datetime.now()
         self.log_message(time, message)
         self.update_data(time, message)
+
+    def add_from_text_log(self, log_file):
+        """
+        Reads in log_file as if sent by udp socket
+
+        :param log_file: name of log file
+        :type log_file: string
+        :return: None
+        """
+        self.last_write = datetime(1900, 1, 1)
+        self.current_session = self.last_write.date()
+        with open(log_file, 'r') as f:
+            logs = f.readlines()
+        for l in logs:
+            l = l.strip()
+            try:
+                time, data = l.split(' - ')
+                time = datetime.strptime(time, '%Y-%m-%d %H:%M:%S')
+
+                self.update_session(time)
+                self.log_to_text_files(time, data)
+                self.log_to_database(time, data)
+                self.update_data(time, data)
+            except:
+                print(f'Could not parse "{l}"')
+        print('Saving data...')
+        self.dump_data()
 
     def finalize(self, id):
         """
